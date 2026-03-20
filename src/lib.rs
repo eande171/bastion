@@ -2,6 +2,7 @@ use worker::{Context, Cors, Env, Method, Request, Response, Result, RouteContext
 
 mod models;
 mod evaluation;
+mod hibp;
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -26,7 +27,18 @@ async fn handle_evaluate(mut req: Request, _ctx: RouteContext<()>) -> Result<Res
         return Response::error("Password cannot be empty", 400);
     }
 
-    let result = evaluation::evaluate(&body.password);
+    let mut result = evaluation::evaluate(&body.password);
+    
+    // Skips HIBP if ?hibp=false
+    let skip_hibp = req.url()?
+        .query_pairs()
+        .any(|(key, value)| key == "hibp" && value == "false");
+
+    if !skip_hibp {
+        let breach = hibp::check_breach(&body.password).await?;
+        result.breached = Some(breach.breached);
+        result.breach_count = Some(breach.breach_count);
+    }
 
     Response::from_json(&result)
 }
