@@ -1,1 +1,18 @@
+# Rust build output
 /target
+/build
+
+# Wrangler
+.wrangler/
+.dev.vars
+
+# Node (from installing wrangler locally)
+node_modules/
+
+# Environment / secrets
+.env
+.env.local
+
+# OS noise
+.DS_Store
+Thumbs.db

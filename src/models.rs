@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Debug)]
 pub struct CrackTimes {
@@ -22,6 +22,11 @@ impl CrackTimes {
             offline_fast_hash,
         }
     }
+}
+
+#[derive(Deserialize, Debug)]
+pub struct EvaluationRequest {
+    pub password: String,
 }
 
 #[derive(Serialize, Debug)]
