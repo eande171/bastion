@@ -29,6 +29,11 @@ pub struct EvaluationRequest {
     pub password: String,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct RegisterRequest {
+    pub email: String,
+}
+
 #[derive(Serialize, Debug)]
 pub struct EvaluationResult {
     pub score:          u8,

@@ -4,3 +4,8 @@ compatibility_date = "2026-03-01"
 
 [build]
 command = "worker-build --release"
+
+[[kv_namespaces]]
+binding = "API_KEYS"
+id = "d74058583f7242ad816357c3bce14bb3"
+preview_id = "afc9cc0ca8a94f79ad41f0e32f1fbbfa"

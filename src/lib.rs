@@ -1,8 +1,9 @@
 use worker::{Context, Cors, Env, Method, Request, Response, Result, RouteContext, Router, event};
 
-mod models;
+mod auth;
 mod evaluation;
 mod hibp;
+mod models;
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -12,6 +13,9 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .post_async("/v1/evaluate", |req, ctx| async move {
             handle_evaluate(req, ctx).await?.with_cors(&build_cors())
+        })
+        .post_async("/v1/keys/register", |req, ctx| async move {
+            handle_register(req, ctx).await?.with_cors(&build_cors())
         })
         .run(req, env)
         .await
@@ -41,6 +45,21 @@ async fn handle_evaluate(mut req: Request, _ctx: RouteContext<()>) -> Result<Res
     }
 
     Response::from_json(&result)
+}
+
+async fn handle_register(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let body: models::RegisterRequest = match req.json().await {
+        Ok(data) => data,
+        Err(_) => return Response::error("Invalid JSON Body", 400),
+    };
+
+    let kv = ctx.kv("API_KEYS")?;
+    let (api_key, regen_token) = auth::register(&body.email, &kv).await?;
+
+    Response::from_json(&serde_json::json!({
+        "api_key": api_key,
+        "regen_token": regen_token
+    }))
 }
 
 fn build_cors() -> Cors {
