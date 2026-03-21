@@ -34,6 +34,12 @@ pub struct RegisterRequest {
     pub email: String,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct RegenerateRequest {
+    pub email: String,
+    pub regen_token: String,
+}
+
 #[derive(Serialize, Debug)]
 pub struct EvaluationResult {
     pub score:          u8,

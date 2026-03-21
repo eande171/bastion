@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json;
 use web_sys::{self, Crypto};
-use worker::{KvStore, Result, ok::Ok};
+use worker::{KvStore, Result, kv, ok::Ok};
 
 #[derive(Serialize, Deserialize)]
 pub enum Tier {
@@ -84,6 +84,22 @@ fn generate_token(prefix: &str) -> Result<String> {
     Ok(format!("{}_{}", prefix, token))
 }
 
+async fn get_metadata(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
+    let data = kv.get(&format!("key:{}", api_key)).json::<KeyMetadata>().await?;
+
+    match data {
+        Some(data) => Ok(data),
+        None => return Err(worker::Error::from("API Key Does Not Exist"))
+    }
+}
+
+async fn put_metadata(api_key: &str, kv: &KvStore, data: &KeyMetadata) -> Result<()> {
+    kv.put(&format!("key:{}", api_key), serde_json::to_string(&data)?)?
+        .execute().await?;
+
+    Ok(())
+}
+
 pub async fn register(email: &str, kv: &KvStore) -> Result<(String, String)> {
     // Check Email
     if !email.contains('@') || !email.contains('.') {
@@ -117,4 +133,85 @@ pub async fn register(email: &str, kv: &KvStore) -> Result<(String, String)> {
 
     // Return Key
     Ok((api_key, regen_token))
+}
+
+pub async fn validate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
+    let mut data = get_metadata(api_key, kv).await?;
+
+    // Update Reset Window
+    if worker::Date::now().as_millis() >= data.reset_at {
+        data.usage = 0;
+        data.reset_at = next_reset_timestamp(&data.tier);
+
+        put_metadata(api_key, kv, &data).await?;
+    }
+
+    // Enforce Hard Limit
+    if let Some(hard_limit) = data.hard_limit {
+        if data.usage >= hard_limit {
+            return Err(worker::Error::from("Hard Limit Reached"))
+        }
+    }
+
+    // Handle Tier Limits
+    match data.tier {
+        Tier::Free => {
+            if data.usage >= data.limit {
+                return Err(worker::Error::from("Rate Limit Exceeded"))
+            }
+        }
+        Tier::Starter | Tier::Pro => {
+            // Handle Overage
+            todo!()
+        }
+    }
+
+    Ok(data)
+}
+
+pub async fn regenerate(email: &str, regen_token: &str, kv: &KvStore) -> Result<(String, String)> {
+    // Validate Email
+    let api_key = kv.get(&format!("email:{}", email)).text().await?
+        .ok_or(worker::Error::from("Email Not Found"))?;
+
+    let mut data = get_metadata(&api_key, kv).await?;
+
+    // Validate Regen Token
+    if data.regen_token != regen_token {
+        return Err(worker::Error::from("Invalid Regeneration Token"))
+    }
+
+    // Invalidate Old Key
+    kv.delete(&format!("key:{}", api_key)).await?;
+    kv.delete(&format!("email:{}", email)).await?;
+
+    // Generate New Key
+    let new_api_key = loop {
+        let candidate = generate_token("bsn_live")?;
+        let existing = kv.get(&format!("key:{}", candidate)).text().await?;
+
+        if existing.is_none() {
+            break candidate
+        }
+    };
+
+    let new_regen_token = generate_token("bsn_regen")?;
+
+    // Update + Store Data
+    data.regen_token = new_regen_token.clone();
+    put_metadata(&new_api_key, kv, &data).await?;
+
+    // Store Email + Key
+    kv.put(&format!("email:{}", email), &new_api_key)?
+        .execute().await?;
+
+    Ok((new_api_key, new_regen_token))
+}
+
+pub async fn increment_usage(api_key: &str, kv: &KvStore) -> Result<()> {
+    let mut data = get_metadata(api_key, kv).await?;
+    data.usage += 1;
+    put_metadata(api_key, kv, &data).await?;
+
+    Ok(())
 }
