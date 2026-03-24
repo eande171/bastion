@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json;
 use web_sys::{self, Crypto};
-use worker::{KvStore, Result, kv, ok::Ok};
+use worker::{KvStore, Result, ok::Ok};
 
 #[derive(Serialize, Deserialize)]
 pub enum Tier {

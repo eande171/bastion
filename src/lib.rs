@@ -1,9 +1,33 @@
-use worker::{Context, Cors, Env, Method, Request, Response, Result, RouteContext, Router, event};
+use worker::{Context, Cors, Date, Env, Method, Request, Response, Result, RouteContext, Router, event};
+use serde::{Deserialize, Serialize};
 
 mod auth;
 mod evaluation;
 mod hibp;
 mod models;
+
+#[derive(Deserialize, Debug)]
+pub struct EvaluationRequest {
+    pub password: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct RegisterRequest {
+    pub email: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct RegenerateRequest {
+    pub email: String,
+    pub regen_token: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DemoMetadata {
+    pub usage: u64,
+    pub reset_at: u64
+}
+
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -13,6 +37,12 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .post_async("/v1/evaluate", |req, ctx| async move {
             handle_evaluate(req, ctx).await?.with_cors(&build_cors())
+        })
+        .options_async("/v1/demo", |_, _| async move {
+            Response::empty()?.with_cors(&build_demo_cors())
+        })
+        .post_async("/v1/demo", |req, ctx| async move {
+            handle_demo(req, ctx).await?.with_cors(&build_demo_cors())
         })
         .post_async("/v1/keys/register", |req, ctx| async move {
             handle_register(req, ctx).await?.with_cors(&build_cors())
@@ -33,7 +63,7 @@ async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
     let kv = ctx.kv("API_KEYS")?;
     auth::validate(&api_key, &kv).await?;    
 
-    let body: models::EvaluationRequest = match req.json().await {
+    let body: EvaluationRequest = match req.json().await {
         Ok(data) => data,
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
@@ -61,7 +91,7 @@ async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
 }
 
 async fn handle_register(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let body: models::RegisterRequest = match req.json().await {
+    let body: RegisterRequest = match req.json().await {
         Ok(data) => data,
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
@@ -76,7 +106,7 @@ async fn handle_register(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
 }
 
 async fn handle_regenerate(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let body: models::RegenerateRequest = match req.json().await {
+    let body: RegenerateRequest = match req.json().await {
         Ok(data) => data,
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
@@ -107,11 +137,89 @@ async fn handle_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     }))
 }
 
+async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    // Extract IP Address
+    let ip = req
+        .headers()
+        .get("CF-Connecting-IP")?
+        .ok_or(worker::Error::from("Unable to determine IP address"))?;
+
+    let kv = ctx.kv("API_KEYS")?;
+    let kv_key = format!("demo:{}", ip);
+    let now = Date::now().as_millis();
+
+    // Load or Create Metadata
+    let mut metadata = match kv.get(&kv_key).json::<DemoMetadata>().await? {
+        Some(data) => data,
+        None => DemoMetadata { 
+            usage: 0, 
+            reset_at: now + 86400000 
+        } // 24 hours
+    };
+
+    // Apply Reset
+    if now >= metadata.reset_at {
+        metadata.usage = 0;
+        metadata.reset_at = now + 86400000;
+    }
+
+    // Enforce Limit
+    if metadata.usage >= 10 {
+        return Response::error("Demo limit reached. Sign up for a free API key.", 429);
+    }
+
+    // Process Request
+    let body: EvaluationRequest = match req.json().await {
+        Ok(data) => data,
+        Err(_) => return Response::error("Invalid JSON Body", 400),
+    };
+
+    if body.password.trim().is_empty() {
+        return Response::error("Password cannot be empty", 400);
+    }
+
+    let mut result = evaluation::evaluate(&body.password);
+
+    // Skips HIBP if ?hibp=false
+    let skip_hibp = req.url()?
+        .query_pairs()
+        .any(|(key, value)| key == "hibp" && value == "false");
+
+    if !skip_hibp {
+        let breach = hibp::check_breach(&body.password).await?;
+        result.breached = Some(breach.breached);
+        result.breach_count = Some(breach.breach_count);
+    }
+
+    // Increment Usage + Store Metadata
+    metadata.usage += 1;
+    kv.put(&kv_key, serde_json::to_string(&metadata)?)?
+        .execute().await?;
+
+    Response::from_json(&result)
+}
+
+async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    // Validate API Key
+    let api_key = extract_api_key(&req)?;
+    let kv = ctx.kv("API_KEYS")?;
+
+    
+    todo!()
+}
+
 fn build_cors() -> Cors {
     Cors::new()
         .with_origins(["*"])
         .with_methods([Method::Options, Method::Post])
         .with_allowed_headers(["Content-Type", "Authorization"])
+}
+
+fn build_demo_cors() -> Cors {
+    Cors::new()
+        .with_origins(["https://eande171.github.io"])
+        .with_methods([Method::Options, Method::Post])
+        .with_allowed_headers(["Content-Type"])
 }
 
 fn extract_api_key(req: &Request) -> Result<String> {
