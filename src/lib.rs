@@ -1,3 +1,19 @@
+/* 
+ * Bastion Password Audit API
+ * Copyright (C) 2026 Eden Anderson
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * 
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ * 
+ */
+
 use worker::{Context, Cors, Date, Env, Method, Request, Response, Result, RouteContext, Router, event};
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +43,10 @@ pub struct DemoMetadata {
     pub reset_at: u64
 }
 
+#[derive(Deserialize, Debug)]
+pub struct SetHardLimitRequest {
+    pub hard_limit: Option<u64>,
+}
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -37,20 +57,40 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .post_async("/v1/evaluate", |req, ctx| async move {
             handle_evaluate(req, ctx).await?.with_cors(&build_cors())
         })
+
         .options_async("/v1/demo", |_, _| async move {
             Response::empty()?.with_cors(&build_demo_cors())
         })
         .post_async("/v1/demo", |req, ctx| async move {
             handle_demo(req, ctx).await?.with_cors(&build_demo_cors())
         })
+
+        .options_async("/v1/keys/register", |_, _| async move {
+            Response::empty()?.with_cors(&build_cors())
+        })
         .post_async("/v1/keys/register", |req, ctx| async move {
             handle_register(req, ctx).await?.with_cors(&build_cors())
+        })
+
+        .options_async("/v1/keys/regenerate", |_, _| async move {
+            Response::empty()?.with_cors(&build_cors())
         })
         .post_async("/v1/keys/regenerate", |req, ctx| async move {
             handle_regenerate(req, ctx).await?.with_cors(&build_cors())
         })
+
+        .options_async("/v1/keys/usage", |_, _| async move {
+            Response::empty()?.with_cors(&build_cors())
+        })
         .get_async("/v1/keys/usage", |req, ctx| async move {
             handle_usage(req, ctx).await?.with_cors(&build_cors())
+        })
+
+        .options_async("/v1/keys/hard-limit", |_, _| async move {
+            Response::empty()?.with_cors(&build_cors())
+        })
+        .patch_async("/v1/keys/hard-limit", |req, ctx| async move {
+            handle_set_hard_limit(req, ctx).await?.with_cors(&build_cors())
         })
         .run(req, env)
         .await
@@ -124,8 +164,7 @@ async fn handle_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let api_key = extract_api_key(&req)?;
 
     let kv = ctx.kv("API_KEYS")?;
-    let metadata = auth::validate(&api_key, &kv).await
-        .map_err(|e| worker::Error::from(e.to_string()))?;
+    let metadata = auth::authenticate(&api_key, &kv).await?;
 
     Response::from_json(&serde_json::json!({
         "tier": metadata.tier,
@@ -152,8 +191,8 @@ async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response
         Some(data) => data,
         None => DemoMetadata { 
             usage: 0, 
-            reset_at: now + 86400000 
-        } // 24 hours
+            reset_at: now + 86400000 // 24 hours
+        } 
     };
 
     // Apply Reset
@@ -202,15 +241,36 @@ async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Resul
     // Validate API Key
     let api_key = extract_api_key(&req)?;
     let kv = ctx.kv("API_KEYS")?;
+    let mut data = auth::authenticate(&api_key, &kv).await?;
 
-    
-    todo!()
+    let body: SetHardLimitRequest = match req.json().await {
+        Ok(data) => data,
+        Err(_) => return Response::error("Invalid JSON Body", 400),
+    };
+
+    if let Some(limit) = body.hard_limit {
+        if limit < data.limit {
+            return Response::error("Hard limit cannot be less than current tier limit", 400);
+        }
+        data.hard_limit = Some(limit);
+    }
+    else {
+        data.hard_limit = None;
+    }
+
+    auth::put_metadata(&api_key, &kv, &data).await?;    
+
+    Response::from_json(&serde_json::json!({
+        "hard_limit": data.hard_limit,
+        "limit": data.limit,
+        "tier": data.tier
+    }))
 }
 
 fn build_cors() -> Cors {
     Cors::new()
         .with_origins(["*"])
-        .with_methods([Method::Options, Method::Post])
+        .with_methods([Method::Options, Method::Post, Method::Get, Method::Patch])
         .with_allowed_headers(["Content-Type", "Authorization"])
 }
 

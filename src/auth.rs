@@ -93,7 +93,7 @@ async fn get_metadata(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
     }
 }
 
-async fn put_metadata(api_key: &str, kv: &KvStore, data: &KeyMetadata) -> Result<()> {
+pub async fn put_metadata(api_key: &str, kv: &KvStore, data: &KeyMetadata) -> Result<()> {
     kv.put(&format!("key:{}", api_key), serde_json::to_string(&data)?)?
         .execute().await?;
 
@@ -135,7 +135,7 @@ pub async fn register(email: &str, kv: &KvStore) -> Result<(String, String)> {
     Ok((api_key, regen_token))
 }
 
-pub async fn validate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
+pub async fn authenticate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
     let mut data = get_metadata(api_key, kv).await?;
 
     // Update Reset Window
@@ -145,6 +145,12 @@ pub async fn validate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
 
         put_metadata(api_key, kv, &data).await?;
     }
+
+    Ok(data)
+}
+
+pub async fn validate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
+    let data = authenticate(api_key, kv).await?;
 
     // Enforce Hard Limit
     if let Some(hard_limit) = data.hard_limit {
