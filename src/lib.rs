@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 mod auth;
 mod evaluation;
 mod hibp;
-mod models;
 
 #[derive(Deserialize, Debug)]
 pub struct EvaluationRequest {
