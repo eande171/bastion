@@ -12,10 +12,15 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
  * 
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ * 
  */
 
 use worker::{Context, Cors, Date, Env, Method, Request, Response, Result, RouteContext, Router, event};
 use serde::{Deserialize, Serialize};
+
+use crate::evaluation::EvaluationResult;
 
 mod auth;
 mod evaluation;
@@ -50,7 +55,7 @@ pub struct SetHardLimitRequest {
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    Router::new()
+    let response = Router::new()
         .options_async("/v1/evaluate", |_, _| async move {
             Response::empty()?.with_cors(&build_cors())
         })
@@ -93,38 +98,35 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             handle_set_hard_limit(req, ctx).await?.with_cors(&build_cors())
         })
         .run(req, env)
-        .await
+        .await?;
+
+
+    let headers = response.headers().clone();
+    
+    headers.set("Cache-Control", "no-store, no-cache, must-revalidate")?;
+    headers.set("Pragma", "no-cache")?;
+    headers.set("Expires", "0")?;
+    headers.set("X-Content-Type-Options", "nosniff")?;
+
+    Ok(response.with_headers(headers))
 }
 
 async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
     let kv = ctx.kv("API_KEYS")?;
-    auth::validate(&api_key, &kv).await?;    
+    auth::process_request(&api_key, &kv).await?;    
 
     let body: EvaluationRequest = match req.json().await {
         Ok(data) => data,
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
 
-    if body.password.trim().is_empty() {
-        return Response::error("Password cannot be empty", 400);
-    }
-
-    let mut result = evaluation::evaluate(&body.password);
-    
-    // Skips HIBP if ?hibp=false
     let skip_hibp = req.url()?
         .query_pairs()
         .any(|(key, value)| key == "hibp" && value == "false");
 
-    if !skip_hibp {
-        let breach = hibp::check_breach(&body.password).await?;
-        result.breached = Some(breach.breached);
-        result.breach_count = Some(breach.breach_count);
-    }
-
-    auth::increment_usage(&api_key, &kv).await?;
+    let result = run_password_audit(&body.password, skip_hibp).await?;
 
     Response::from_json(&result)
 }
@@ -212,22 +214,11 @@ async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
 
-    if body.password.trim().is_empty() {
-        return Response::error("Password cannot be empty", 400);
-    }
-
-    let mut result = evaluation::evaluate(&body.password);
-
-    // Skips HIBP if ?hibp=false
     let skip_hibp = req.url()?
         .query_pairs()
         .any(|(key, value)| key == "hibp" && value == "false");
 
-    if !skip_hibp {
-        let breach = hibp::check_breach(&body.password).await?;
-        result.breached = Some(breach.breached);
-        result.breach_count = Some(breach.breach_count);
-    }
+    let result = run_password_audit(&body.password, skip_hibp).await?;
 
     // Increment Usage + Store Metadata
     metadata.usage += 1;
@@ -265,6 +256,31 @@ async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Resul
         "limit": data.limit,
         "tier": data.tier
     }))
+}
+
+async fn run_password_audit(password: &str, skip_hibp: bool) -> Result<EvaluationResult> {
+    if password.len() > 128 {
+        return Err(worker::Error::from("Password cannot exceed 128 characters"));
+    }
+
+    if password.trim().is_empty() {
+        return Err(worker::Error::from("Password cannot be empty"));
+    }
+
+    let mut result = evaluation::evaluate(password);
+
+    if !skip_hibp {
+        if let Ok(breach) = hibp::check_breach(password).await {
+            result.breached = Some(breach.breached);
+            result.breach_count = Some(breach.breach_count);
+        }
+        else {
+            result.breached = None;
+            result.breach_count = Some(0);
+        }
+    }
+
+    Ok(result)
 }
 
 fn build_cors() -> Cors {

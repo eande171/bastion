@@ -1,3 +1,22 @@
+/* 
+ * Bastion Password Audit API
+ * Copyright (C) 2026 Eden Anderson
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * 
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ * 
+ */
+
 use serde::{Deserialize, Serialize};
 use serde_json;
 use web_sys::{self, Crypto};
@@ -149,8 +168,14 @@ pub async fn authenticate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
     Ok(data)
 }
 
-pub async fn validate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
-    let data = authenticate(api_key, kv).await?;
+pub async fn process_request(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
+    let mut data = get_metadata(api_key, kv).await?;
+
+    // Update Reset Window
+    if worker::Date::now().as_millis() >= data.reset_at {
+        data.usage = 0;
+        data.reset_at = next_reset_timestamp(&data.tier);
+    }
 
     // Enforce Hard Limit
     if let Some(hard_limit) = data.hard_limit {
@@ -171,6 +196,10 @@ pub async fn validate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
             todo!()
         }
     }
+
+    // Increment Usage
+    data.usage += 1;
+    put_metadata(api_key, kv, &data).await?;
 
     Ok(data)
 }
@@ -212,12 +241,4 @@ pub async fn regenerate(email: &str, regen_token: &str, kv: &KvStore) -> Result<
         .execute().await?;
 
     Ok((new_api_key, new_regen_token))
-}
-
-pub async fn increment_usage(api_key: &str, kv: &KvStore) -> Result<()> {
-    let mut data = get_metadata(api_key, kv).await?;
-    data.usage += 1;
-    put_metadata(api_key, kv, &data).await?;
-
-    Ok(())
 }

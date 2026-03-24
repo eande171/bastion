@@ -1,3 +1,22 @@
+/* 
+ * Bastion Password Audit API
+ * Copyright (C) 2026 Eden Anderson
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ * 
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ * 
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ * 
+ */
+
 use worker::{Fetch, Headers, Request, RequestInit, Result};
 
 use sha1::{Digest, Sha1};
@@ -29,7 +48,14 @@ pub async fn check_breach(password: &str) -> Result<BreachResult> {
 
     let request = Request::new_with_init(&url, &init)?;
 
-    let mut response = Fetch::Request(request).send().await?;
+    let mut response = match Fetch::Request(request).send().await {
+        Ok(res) => res,
+        Err(_) => return Err(worker::Error::from("HIBP API Request Failed")),
+    };
+
+    if response.status_code() != 200 {
+        return Err(worker::Error::from(format!("HIBP API Error: {}", response.status_code())));
+    }
 
     let body = response.text().await?;
 
