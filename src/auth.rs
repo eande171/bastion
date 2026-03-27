@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json;
+use sha2::{Digest, Sha256};
 use web_sys::{self, Crypto};
 use worker::{KvStore, Result, ok::Ok};
 
@@ -80,6 +81,12 @@ impl KeyMetadata {
     }
 }
 
+fn hash_credential(credential: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(credential);
+    hex::encode(hasher.finalize())
+}
+
 fn next_reset_timestamp(tier: &Tier) -> u64 {
     worker::Date::now().as_millis() + tier.reset_interval_ms()
 }
@@ -103,8 +110,8 @@ fn generate_token(prefix: &str) -> Result<String> {
     Ok(format!("{}_{}", prefix, token))
 }
 
-async fn get_metadata(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
-    let data = kv.get(&format!("key:{}", api_key)).json::<KeyMetadata>().await?;
+async fn get_metadata(api_hash: &str, kv: &KvStore) -> Result<KeyMetadata> {
+    let data = kv.get(&format!("key:{}", api_hash)).json::<KeyMetadata>().await?;
 
     match data {
         Some(data) => Ok(data),
@@ -112,42 +119,40 @@ async fn get_metadata(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
     }
 }
 
-pub async fn put_metadata(api_key: &str, kv: &KvStore, data: &KeyMetadata) -> Result<()> {
-    kv.put(&format!("key:{}", api_key), serde_json::to_string(&data)?)?
+pub async fn put_metadata(api_hash: &str, kv: &KvStore, data: &KeyMetadata) -> Result<()> {
+    kv.put(&format!("key:{}", api_hash), serde_json::to_string(&data)?)?
         .execute().await?;
 
     Ok(())
 }
 
 pub async fn register(email: &str, kv: &KvStore) -> Result<(String, String)> {
+    let email = email.trim().to_lowercase();
+    let email_hash = hash_credential(&email);
+
     // Check Email
     if !email.contains('@') || !email.contains('.') {
         return Err(worker::Error::from("Invalid Email"))
     }
 
-    if kv.get(&format!("email:{}", email)).text().await?.is_some() {
+    if kv.get(&format!("email:{}", email_hash)).text().await?.is_some() {
         return Err(worker::Error::from("Email Already Exists"))
     }
-
-    // Ensure No Duplicate Keys
-    let api_key = loop {
-        let candidate = generate_token("bsn_live")?;
-        let existing = kv.get(&format!("key:{}", candidate)).text().await?;
-
-        if existing.is_none() {
-            break candidate
-        }
-    };
-
+    
+    let api_key = generate_token("bsn_live")?;
     let regen_token = generate_token("bsn_regen")?;
 
+    // Hash Credentials
+    let api_hash = hash_credential(&api_key);
+    let regen_hash = hash_credential(&regen_token);
+
     // Build + Store Data
-    let metadata = KeyMetadata::new(email.to_string(), regen_token.clone());
-    kv.put(&format!("key:{}", api_key), serde_json::to_string(&metadata)?)?
+    let metadata = KeyMetadata::new(email_hash.clone(), regen_hash);
+    kv.put(&format!("key:{}", api_hash), serde_json::to_string(&metadata)?)?
         .execute().await?;
 
     // Store Email + Key
-    kv.put(&format!("email:{}", email), &api_key)?
+    kv.put(&format!("email:{}", email_hash), &api_hash)?
         .execute().await?;
 
     // Return Key
@@ -155,21 +160,21 @@ pub async fn register(email: &str, kv: &KvStore) -> Result<(String, String)> {
 }
 
 pub async fn authenticate(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
-    let mut data = get_metadata(api_key, kv).await?;
+    let mut data = get_metadata(&hash_credential(api_key), kv).await?;
 
     // Update Reset Window
     if worker::Date::now().as_millis() >= data.reset_at {
         data.usage = 0;
         data.reset_at = next_reset_timestamp(&data.tier);
 
-        put_metadata(api_key, kv, &data).await?;
+        put_metadata(&hash_credential(api_key), kv, &data).await?;
     }
 
     Ok(data)
 }
 
 pub async fn process_request(api_key: &str, kv: &KvStore) -> Result<KeyMetadata> {
-    let mut data = get_metadata(api_key, kv).await?;
+    let mut data = get_metadata(&hash_credential(api_key), kv).await?;
 
     // Update Reset Window
     if worker::Date::now().as_millis() >= data.reset_at {
@@ -199,45 +204,44 @@ pub async fn process_request(api_key: &str, kv: &KvStore) -> Result<KeyMetadata>
 
     // Increment Usage
     data.usage += 1;
-    put_metadata(api_key, kv, &data).await?;
+    put_metadata(&hash_credential(api_key), kv, &data).await?;
 
     Ok(data)
 }
 
 pub async fn regenerate(email: &str, regen_token: &str, kv: &KvStore) -> Result<(String, String)> {
     // Validate Email
-    let api_key = kv.get(&format!("email:{}", email)).text().await?
+    let email = email.trim().to_lowercase();
+    let email_hash = hash_credential(&email);
+
+    let api_hash = kv.get(&format!("email:{}", email_hash)).text().await?
         .ok_or(worker::Error::from("Email Not Found"))?;
 
-    let mut data = get_metadata(&api_key, kv).await?;
+    let mut data = get_metadata(&api_hash, kv).await?;
 
     // Validate Regen Token
-    if data.regen_token != regen_token {
+    if data.regen_token != hash_credential(regen_token) {
         return Err(worker::Error::from("Invalid Regeneration Token"))
     }
 
     // Invalidate Old Key
-    kv.delete(&format!("key:{}", api_key)).await?;
-    kv.delete(&format!("email:{}", email)).await?;
+    kv.delete(&format!("key:{}", api_hash)).await?;
+    kv.delete(&format!("email:{}", email_hash)).await?;
 
     // Generate New Key
-    let new_api_key = loop {
-        let candidate = generate_token("bsn_live")?;
-        let existing = kv.get(&format!("key:{}", candidate)).text().await?;
-
-        if existing.is_none() {
-            break candidate
-        }
-    };
-
+    let new_api_key = generate_token("bsn_live")?;
     let new_regen_token = generate_token("bsn_regen")?;
 
+    // Hash Credentials
+    let new_api_hash = hash_credential(&new_api_key);
+    let new_regen_hash = hash_credential(&new_regen_token);
+
     // Update + Store Data
-    data.regen_token = new_regen_token.clone();
-    put_metadata(&new_api_key, kv, &data).await?;
+    data.regen_token = new_regen_hash.clone();
+    put_metadata(&new_api_hash, kv, &data).await?;
 
     // Store Email + Key
-    kv.put(&format!("email:{}", email), &new_api_key)?
+    kv.put(&format!("email:{}", email_hash), &new_api_hash)?
         .execute().await?;
 
     Ok((new_api_key, new_regen_token))
