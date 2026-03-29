@@ -19,4 +19,4 @@ class_name = "DemoRateLimit"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["KeyState", "EmailIndex", "DemoRateLimit"]
+new_sqlite_classes = ["KeyState", "EmailIndex", "DemoRateLimit"]
