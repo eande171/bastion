@@ -17,14 +17,17 @@
  * 
  */
 
-use worker::{Context, Cors, Date, Env, Method, Request, Response, Result, RouteContext, Router, event};
-use serde::{Deserialize, Serialize};
+use worker::{Context, Cors, Env, Method, Request, Response, Result, RouteContext, Router, event};
+use serde::{Deserialize};
 
 use crate::evaluation::EvaluationResult;
 
 mod auth;
+mod durable_objects;
 mod evaluation;
 mod hibp;
+
+pub use durable_objects::{KeyState, EmailIndex, DemoRateLimit};
 
 #[derive(Deserialize, Debug)]
 pub struct EvaluationRequest {
@@ -40,12 +43,6 @@ pub struct RegisterRequest {
 pub struct RegenerateRequest {
     pub email: String,
     pub regen_token: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct DemoMetadata {
-    pub usage: u64,
-    pub reset_at: u64
 }
 
 #[derive(Deserialize, Debug)]
@@ -68,6 +65,13 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         })
         .post_async("/v1/demo", |req, ctx| async move {
             handle_demo(req, ctx).await?.with_cors(&build_demo_cors())
+        })
+
+        .options_async("/v1/demo/usage", |_, _| async move {
+            Response::empty()?.with_cors(&build_demo_cors())
+        })
+        .get_async("/v1/demo/usage", |req, ctx| async move {
+            handle_demo_usage(req, ctx).await?.with_cors(&build_demo_cors())
         })
 
         .options_async("/v1/keys/register", |_, _| async move {
@@ -114,8 +118,10 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
-    let kv = ctx.kv("API_KEYS")?;
-    auth::process_request(&api_key, &kv).await?;    
+    match auth::process_request(&api_key, &ctx.env).await {
+        Ok(_) => (),
+        Err(_) => return Response::error("Invalid API Key", 401),
+    }
 
     let body: EvaluationRequest = match req.json().await {
         Ok(data) => data,
@@ -137,8 +143,7 @@ async fn handle_register(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
 
-    let kv = ctx.kv("API_KEYS")?;
-    let (api_key, regen_token) = auth::register(&body.email, &kv).await?;
+    let (api_key, regen_token) = auth::register(&body.email, &ctx.env).await?;
 
     Response::from_json(&serde_json::json!({
         "api_key": api_key,
@@ -152,8 +157,7 @@ async fn handle_regenerate(mut req: Request, ctx: RouteContext<()>) -> Result<Re
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
 
-    let kv = ctx.kv("API_KEYS")?;
-    let (new_api_key, new_regen_token) = auth::regenerate(&body.email, &body.regen_token, &kv).await?;
+    let (new_api_key, new_regen_token) = auth::regenerate(&body.email, &body.regen_token, &ctx.env).await?;
 
     Response::from_json(&serde_json::json!({
         "api_key": new_api_key,
@@ -165,8 +169,10 @@ async fn handle_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
 
-    let kv = ctx.kv("API_KEYS")?;
-    let metadata = auth::authenticate(&api_key, &kv).await?;
+    let metadata = match auth::authenticate(&api_key, &ctx.env).await {
+        Ok(metadata) => metadata,
+        Err(_) => return Response::error("Invalid API Key", 401),
+    };
 
     Response::from_json(&serde_json::json!({
         "tier": metadata.tier,
@@ -178,37 +184,16 @@ async fn handle_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
 }
 
 async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    // Extract IP Address
     let ip = req
         .headers()
         .get("CF-Connecting-IP")?
         .ok_or(worker::Error::from("Unable to determine IP address"))?;
 
-    let kv = ctx.kv("API_KEYS")?;
-    let kv_key = format!("demo:{}", ip);
-    let now = Date::now().as_millis();
-
-    // Load or Create Metadata
-    let mut metadata = match kv.get(&kv_key).json::<DemoMetadata>().await? {
-        Some(data) => data,
-        None => DemoMetadata { 
-            usage: 0, 
-            reset_at: now + 86400000 // 24 hours
-        } 
-    };
-
-    // Apply Reset
-    if now >= metadata.reset_at {
-        metadata.usage = 0;
-        metadata.reset_at = now + 86400000;
-    }
-
-    // Enforce Limit
-    if metadata.usage >= 10 {
+    let demo_data = auth::check_demo(&ip, &ctx.env).await?;
+    if demo_data.usage >= 10 {
         return Response::error("Demo limit reached. Sign up for a free API key.", 429);
     }
 
-    // Process Request
     let body: EvaluationRequest = match req.json().await {
         Ok(data) => data,
         Err(_) => return Response::error("Invalid JSON Body", 400),
@@ -219,20 +204,32 @@ async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response
         .any(|(key, value)| key == "hibp" && value == "false");
 
     let result = run_password_audit(&body.password, skip_hibp).await?;
-
-    // Increment Usage + Store Metadata
-    metadata.usage += 1;
-    kv.put(&kv_key, serde_json::to_string(&metadata)?)?
-        .execute().await?;
+    auth::increment_demo(&ip, &ctx.env).await?;
 
     Response::from_json(&result)
+}
+
+async fn handle_demo_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+    let ip = req
+        .headers()
+        .get("CF-Connecting-IP")?
+        .ok_or(worker::Error::from("Unable to determine IP address"))?;
+
+    let metadata = auth::check_demo(&ip, &ctx.env).await?;
+
+    Response::from_json(&serde_json::json!({
+        "usage": metadata.usage,
+        "reset_at": metadata.reset_at
+    }))
 }
 
 async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
-    let kv = ctx.kv("API_KEYS")?;
-    let mut data = auth::authenticate(&api_key, &kv).await?;
+    let mut data = match auth::authenticate(&api_key, &ctx.env).await {
+        Ok(metadata) => metadata,
+        Err(_) => return Response::error("Invalid API Key", 401),
+    };
 
     let body: SetHardLimitRequest = match req.json().await {
         Ok(data) => data,
@@ -249,7 +246,7 @@ async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Resul
         data.hard_limit = None;
     }
 
-    auth::put_metadata(&api_key, &kv, &data).await?;    
+    auth::put_metadata(&api_key, &ctx.env, &data).await?;    
 
     Response::from_json(&serde_json::json!({
         "hard_limit": data.hard_limit,
