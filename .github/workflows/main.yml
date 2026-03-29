@@ -29,7 +29,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           
       - name: Install worker-build
-        run: cargo install worker-build
+        run: which worker-build || cargo install worker-build --locked
         
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
