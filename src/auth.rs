@@ -197,7 +197,8 @@ pub async fn register(email: &str, env: &Env) -> Result<(String, String)> {
     let email_hash = hash_credential(&email);
 
     // Check if Email Already Exists
-    if stub_post(get_email_stub(env)?, "/get", email_hash.clone()).await.is_ok() {
+    let email_check = stub_post(get_email_stub(env)?, "/get", email_hash.clone()).await?;
+    if email_check.status_code() == 200 {
         return Err(worker::Error::from("Email Already Exists"))
     }
 
