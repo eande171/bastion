@@ -18,7 +18,7 @@
  */
 
 use crate::auth::{DemoMetadata, EmailPut, KeyMetadata, Tier, next_reset_timestamp};
-use worker::{DurableObject, Env, Request, Response, Result, State, console_log, durable_object, wasm_bindgen};
+use worker::{DurableObject, Env, Request, Response, Result, State, durable_object, wasm_bindgen};
 
 // KeyState
 #[durable_object(fetch)]
@@ -68,7 +68,6 @@ impl KeyState {
     }
 
     async fn handle_put(&self, mut req: Request) -> Result<Response> {
-        console_log!("Received PUT request for KeyState");
         let new_data: KeyMetadata = req.json().await?;
         self.save(&new_data).await?;
         Response::ok("Metadata Updated")
@@ -85,14 +84,11 @@ impl KeyState {
             data.reset_at = next_reset_timestamp(&data.tier);
             self.save(&data).await?;
         }
-    
-        console_log!("Authentication Check - Usage: {}, Reset At: {}", data.usage, data.reset_at);
 
         Response::from_json(&data)
     }
 
     async fn handle_process(&self) -> Result<Response> {
-        console_log!("Processing API Key Request");
         let mut data = match self.load().await {
             Ok(data) => data,
             Err(_) => return Response::error("API Key Does Not Exist", 404),
@@ -117,7 +113,8 @@ impl KeyState {
             }
             Tier::Starter | Tier::Pro => {
                 // Handle Overage Logic Here
-                todo!()
+                // todo!()
+                return Response::error("Paid tier billing not implemented yet", 501);
             }
         }
     
@@ -128,7 +125,6 @@ impl KeyState {
     }
 
     async fn handle_delete(&self) -> Result<Response> {
-        console_log!("Deleting API Key");
         self.state.storage().delete("metadata").await?;
         Response::ok("API Key Deleted")
     }
@@ -154,7 +150,6 @@ impl DurableObject for EmailIndex {
         match req.path().as_str() {
             // POST /get | email_hash -> api_hash
             "/get" => {
-                console_log!("Received GET request for EmailIndex with body: {}", body);
                 match self.state.storage().get::<String>(&body).await? {
                     Some(api_hash) => Response::ok(api_hash),
                     None => Response::error("Email Not Found", 404),
@@ -163,7 +158,6 @@ impl DurableObject for EmailIndex {
 
             // POST /put | { email_hash, api_hash }
             "/put" => {
-                console_log!("Received PUT request for EmailIndex with body: {}", body);
                 let ep = match serde_json::from_str::<EmailPut>(&body) {
                     Ok(data) => data,
                     Err(_) => return Response::error("Invalid Request Body", 400),
@@ -175,7 +169,6 @@ impl DurableObject for EmailIndex {
 
             // POST /delete | email_hash
             "/delete" => {
-                console_log!("Received DELETE request for EmailIndex with body: {}", body);
                 self.state.storage().delete(&body).await?;
                 Response::ok("Email Deleted")
             },
@@ -202,7 +195,6 @@ impl DurableObject for DemoRateLimit {
         match req.path().as_str() {
             // POST /check | ip_hash -> DemoMetadata
             "/check" => {
-                console_log!("Received CHECK request for DemoRateLimit with IP Hash: {}", ip_hash);
                 Response::from_json(&match self.state.storage().get::<DemoMetadata>(&ip_hash).await? {
                     Some(data) => data,
                     None => DemoMetadata {
@@ -214,7 +206,6 @@ impl DurableObject for DemoRateLimit {
 
             // POST /increment | ip_hash
             "/increment" => {
-                console_log!("Received INCREMENT request for DemoRateLimit with IP Hash: {}", ip_hash);
                 let mut data = match self.state.storage().get::<DemoMetadata>(&ip_hash).await? {
                     Some(data) => data,
                     None => DemoMetadata {

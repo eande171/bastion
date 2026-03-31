@@ -116,11 +116,19 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 }
 
 async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    // Validate API Key
-    let api_key = extract_api_key(&req)?;
-    match auth::process_request(&api_key, &ctx.env).await {
-        Ok(_) => (),
-        Err(_) => return Response::error("Invalid API Key", 401),
+    // Determine Origin
+    let proxy_secret = ctx.env.secret("RAPIDAPI_PROXY_SECRET")?.to_string();
+    let incoming_secret = req.headers().get("X-RapidAPI-Proxy-Secret")?;
+
+    let is_rapidapi = match incoming_secret {
+        Some(secret) if secret == proxy_secret => true,
+        _ => false,
+    };
+
+    if !is_rapidapi {
+        // Validate API Key
+        let api_key = extract_api_key(&req)?;
+        auth::process_request(&api_key, &ctx.env).await?;
     }
 
     let body: EvaluationRequest = match req.json().await {
@@ -300,6 +308,10 @@ fn extract_api_key(req: &Request) -> Result<String> {
         .strip_prefix("Bearer ")
         .ok_or(worker::Error::from("Invalid Authorization Header"))?
         .to_string();
+
+    if !api_key.starts_with("bsn_live_") {
+        return Err(worker::Error::from("Invalid API Key Format"));
+    }
 
     Ok(api_key)
 }
