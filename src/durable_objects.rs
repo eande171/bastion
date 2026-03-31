@@ -24,12 +24,12 @@ use worker::{DurableObject, Env, Request, Response, Result, State, durable_objec
 #[durable_object(fetch)]
 pub struct KeyState {
     state: State,
-    env: Env,
+    _env: Env,
 }
 
 impl DurableObject for KeyState {
     fn new(state: State, env: Env) -> Self {
-        Self { state, env }
+        Self { state, _env: env }
     }
 
     async fn fetch(&self, req: Request) -> Result<Response> {
@@ -74,9 +74,8 @@ impl KeyState {
     }
 
     async fn handle_authenticate(&self) -> Result<Response> {
-        let mut data = match self.load().await {
-            Ok(data) => data,
-            Err(_) => return Response::error("API Key Does Not Exist", 404),
+        let Ok(mut data) = self.load().await else {
+            return Response::error("API Key Does Not Exist", 404);
         };
 
         if worker::Date::now().as_millis() >= data.reset_at {
@@ -89,9 +88,8 @@ impl KeyState {
     }
 
     async fn handle_process(&self) -> Result<Response> {
-        let mut data = match self.load().await {
-            Ok(data) => data,
-            Err(_) => return Response::error("API Key Does Not Exist", 404),
+        let Ok(mut data) = self.load().await else {
+            return Response::error("API Key Does Not Exist", 404);
         };
     
         if worker::Date::now().as_millis() >= data.reset_at {
@@ -99,10 +97,9 @@ impl KeyState {
             data.reset_at = next_reset_timestamp(&data.tier);
         }
 
-        if let Some(hard_limit) = data.hard_limit {
-            if data.usage >= hard_limit {
-                return Response::error("API Key Usage Limit Exceeded", 429);
-            }
+        if let Some(hard_limit) = data.hard_limit 
+            && data.usage >= hard_limit {
+            return Response::error("API Key Usage Limit Exceeded", 429);
         }
 
         match data.tier {
@@ -136,12 +133,12 @@ const DEMO_RESET_INTERVAL_MS: u64 = 24 * 3600 * 1000; // 24 hours
 #[durable_object(fetch)]
 pub struct EmailIndex{
     state: State,
-    env: Env,
+    _env: Env,
 }
 
 impl DurableObject for EmailIndex {
     fn new(state: State, env: Env) -> Self {
-        Self { state, env }
+        Self { state, _env: env }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -158,9 +155,8 @@ impl DurableObject for EmailIndex {
 
             // POST /put | { email_hash, api_hash }
             "/put" => {
-                let ep = match serde_json::from_str::<EmailPut>(&body) {
-                    Ok(data) => data,
-                    Err(_) => return Response::error("Invalid Request Body", 400),
+                let Ok(ep) = serde_json::from_str::<EmailPut>(&body) else {
+                    return Response::error("Invalid Request Body", 400);
                 };
 
                 self.state.storage().put(&ep.email_hash, &ep.api_hash).await?;
@@ -181,12 +177,12 @@ impl DurableObject for EmailIndex {
 #[durable_object(fetch)]
 pub struct DemoRateLimit {
     state: State,
-    env: Env,
+    _env: Env,
 }
 
 impl DurableObject for DemoRateLimit {
     fn new(state: State, env: Env) -> Self {
-        Self { state, env }
+        Self { state, _env: env }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
