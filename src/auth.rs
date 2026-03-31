@@ -18,7 +18,6 @@
  */
 
 use serde::{Deserialize, Serialize};
-use serde_json;
 use sha2::{Digest, Sha256};
 use web_sys::{self, Crypto};
 use worker::{Env, Response, Result, Stub, ok::Ok};
@@ -35,7 +34,7 @@ impl Tier {
         match self {
             Tier::Free => 100,
             Tier::Starter => 10000,
-            Tier::Pro => 100000
+            Tier::Pro => 100_000
         }
     }
 
@@ -118,9 +117,9 @@ fn generate_token(prefix: &str) -> Result<String> {
     let uuid1 = crypto.random_uuid();
     let uuid2 = crypto.random_uuid();
 
-    let token = format!("{}{}", uuid1.replace("-", ""), uuid2.replace("-", ""));
+    let token = format!("{}{}", uuid1.replace('-', ""), uuid2.replace('-', ""));
 
-    Ok(format!("{}_{}", prefix, token))
+    Ok(format!("{prefix}_{token}"))
 }
 
 // Stub Helpers
@@ -139,7 +138,7 @@ fn get_demo_stub(env: &Env) -> Result<Stub> {
 // Stub Interactions
 async fn stub_get(stub: Stub, path: &str) -> Result<Response> {
     let mut response = stub
-        .fetch_with_str(&format!("http://do{}", path))
+        .fetch_with_str(&format!("http://do{path}"))
         .await?;
 
     if response.status_code() != 200 {
@@ -153,7 +152,7 @@ async fn stub_post(stub: Stub, path: &str, body: String) -> Result<Response> {
     let mut init = worker::RequestInit::new();
     init.with_method(worker::Method::Post).with_body(Some(body.into()));
 
-    let request = worker::Request::new_with_init(&format!("http://do{}", path), &init)?;
+    let request = worker::Request::new_with_init(&format!("http://do{path}"), &init)?;
 
     let mut response = stub.fetch_with_request(request).await?;
 
@@ -168,7 +167,7 @@ async fn stub_delete(stub: Stub, path: &str) -> Result<Response> {
     let mut init = worker::RequestInit::new();
     init.with_method(worker::Method::Delete);
 
-    let request = worker::Request::new_with_init(&format!("http://do{}", path), &init)?;
+    let request = worker::Request::new_with_init(&format!("http://do{path}"), &init)?;
 
     let mut response = stub.fetch_with_request(request).await?;
 

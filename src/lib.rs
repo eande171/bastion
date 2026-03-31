@@ -18,7 +18,8 @@
  */
 
 use worker::{Context, Cors, Env, Method, Request, Response, Result, RouteContext, Router, event};
-use serde::{Deserialize};
+use serde::Deserialize;
+use zeroize::Zeroize;
 
 use crate::evaluation::EvaluationResult;
 
@@ -120,10 +121,7 @@ async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
     let proxy_secret = ctx.env.secret("RAPIDAPI_PROXY_SECRET")?.to_string();
     let incoming_secret = req.headers().get("X-RapidAPI-Proxy-Secret")?;
 
-    let is_rapidapi = match incoming_secret {
-        Some(secret) if secret == proxy_secret => true,
-        _ => false,
-    };
+    let is_rapidapi = matches!(incoming_secret, Some(secret) if secret == proxy_secret);
 
     if !is_rapidapi {
         // Validate API Key
@@ -131,7 +129,7 @@ async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
         auth::process_request(&api_key, &ctx.env).await?;
     }
 
-    let body: EvaluationRequest = match req.json().await {
+    let mut body: EvaluationRequest = match req.json().await {
         Ok(data) => data,
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
@@ -141,6 +139,7 @@ async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
         .any(|(key, value)| key == "hibp" && value == "false");
 
     let result = run_password_audit(&body.password, skip_hibp).await?;
+    body.password.zeroize(); // Clear Password from Memory
 
     Response::from_json(&result)
 }
@@ -177,9 +176,8 @@ async fn handle_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
 
-    let metadata = match auth::authenticate(&api_key, &ctx.env).await {
-        Ok(metadata) => metadata,
-        Err(_) => return Response::error("Invalid API Key", 401),
+    let Ok(metadata) = auth::authenticate(&api_key, &ctx.env).await else {
+        return Response::error("Invalid API Key", 401);
     };
 
     Response::from_json(&serde_json::json!({
@@ -202,7 +200,7 @@ async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response
         return Response::error("Demo limit reached. Sign up for a free API key.", 429);
     }
 
-    let body: EvaluationRequest = match req.json().await {
+    let mut body: EvaluationRequest = match req.json().await {
         Ok(data) => data,
         Err(_) => return Response::error("Invalid JSON Body", 400),
     };
@@ -212,6 +210,8 @@ async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response
         .any(|(key, value)| key == "hibp" && value == "false");
 
     let result = run_password_audit(&body.password, skip_hibp).await?;
+    body.password.zeroize(); // Clear Password from Memory
+
     auth::increment_demo(&ip, &ctx.env).await?;
 
     Response::from_json(&result)
@@ -234,9 +234,8 @@ async fn handle_demo_usage(req: Request, ctx: RouteContext<()>) -> Result<Respon
 async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
-    let mut data = match auth::authenticate(&api_key, &ctx.env).await {
-        Ok(metadata) => metadata,
-        Err(_) => return Response::error("Invalid API Key", 401),
+    let Ok(mut data) = auth::authenticate(&api_key, &ctx.env).await else {
+        return Response::error("Invalid API Key", 401);
     };
 
     let body: SetHardLimitRequest = match req.json().await {

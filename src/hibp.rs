@@ -18,8 +18,8 @@
  */
 
 use worker::{Fetch, Headers, Request, RequestInit, Result};
-
 use sha1::{Digest, Sha1};
+use zeroize::Zeroize;
 
 pub struct BreachResult {
     pub breached: bool,
@@ -31,13 +31,13 @@ pub async fn check_breach(password: &str) -> Result<BreachResult> {
     let mut hasher = Sha1::new();
     hasher.update(password);
 
-    let hash_hex = hex::encode(hasher.finalize()).to_uppercase();
+    let mut hash_hex = hex::encode(hasher.finalize()).to_uppercase();
 
     let prefix = &hash_hex[..5];
     let suffix = &hash_hex[5..];
 
     // Handle Request
-    let url = format!("https://api.pwnedpasswords.com/range/{}", prefix);
+    let url = format!("https://api.pwnedpasswords.com/range/{prefix}");
 
     let headers = Headers::new();
     headers.set("Add-Padding", "true")?; 
@@ -48,9 +48,8 @@ pub async fn check_breach(password: &str) -> Result<BreachResult> {
 
     let request = Request::new_with_init(&url, &init)?;
 
-    let mut response = match Fetch::Request(request).send().await {
-        Ok(res) => res,
-        Err(_) => return Err(worker::Error::from("HIBP API Request Failed")),
+    let Ok(mut response) = Fetch::Request(request).send().await else {
+        return Err(worker::Error::from("HIBP API Request Failed"));
     };
 
     if response.status_code() != 200 {
@@ -61,15 +60,17 @@ pub async fn check_breach(password: &str) -> Result<BreachResult> {
 
     // Parse Lines
     for line in body.lines() {
-        if let Some((line_suffix, count)) = line.split_once(":") {
-            if line_suffix == suffix {
-                return Ok(BreachResult { 
-                    breached: true, 
-                    breach_count: count.trim().parse().unwrap_or(0)
-                });
-            }
+        if let Some((line_suffix, count)) = line.split_once(':') 
+            && line_suffix == suffix {
+            return Ok(BreachResult { 
+                breached: true, 
+                breach_count: count.trim().parse().unwrap_or(0)
+            });
         }
     }
+    
+
+    hash_hex.zeroize(); // Clear Hash from Memory
 
     Ok(BreachResult {
         breached: false,
