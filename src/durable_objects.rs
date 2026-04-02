@@ -17,6 +17,8 @@
  * 
  */
 
+use std::time::Duration;
+
 use crate::auth::{DemoMetadata, EmailPut, KeyMetadata, Tier, next_reset_timestamp};
 use worker::{DurableObject, Env, Request, Response, Result, State, durable_object, wasm_bindgen};
 
@@ -188,6 +190,10 @@ impl DurableObject for DemoRateLimit {
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let ip_hash = req.text().await?;
 
+        if self.state.storage().get_alarm().await?.is_none() {
+            self.state.storage().set_alarm(Duration::from_hours(24)).await?;
+        }
+
         match req.path().as_str() {
             // POST /check | ip_hash -> DemoMetadata
             "/check" => {
@@ -195,7 +201,6 @@ impl DurableObject for DemoRateLimit {
                     Some(data) => data,
                     None => DemoMetadata {
                         usage: 0,
-                        reset_at: worker::Date::now().as_millis() + DEMO_RESET_INTERVAL_MS
                     }
                 })
             }
@@ -206,14 +211,8 @@ impl DurableObject for DemoRateLimit {
                     Some(data) => data,
                     None => DemoMetadata {
                         usage: 0,
-                        reset_at: worker::Date::now().as_millis() + DEMO_RESET_INTERVAL_MS
                     }
                 };
-
-                if worker::Date::now().as_millis() >= data.reset_at {
-                    data.usage = 0;
-                    data.reset_at = worker::Date::now().as_millis() + DEMO_RESET_INTERVAL_MS;
-                }
                 
                 data.usage += 1;
                 self.state.storage().put(&ip_hash, &data).await?;
@@ -223,5 +222,14 @@ impl DurableObject for DemoRateLimit {
 
             _ => Response::error("Not Found", 404),
         }
+    }
+
+    async fn alarm(&self) -> Result<Response> {
+        // Delete All Keys On Alarm (Every 24 Hours)
+        self.state.storage().delete_all().await?;
+
+        self.state.storage().set_alarm(Duration::from_hours(24)).await?;
+        
+        Response::ok("Demo Rate Limits Reset")
     }
 }
