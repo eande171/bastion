@@ -130,8 +130,6 @@ impl KeyState {
 }
 
 // EmailIndex
-const DEMO_RESET_INTERVAL_MS: u64 = 24 * 3600 * 1000; // 24 hours
-
 #[durable_object(fetch)]
 pub struct EmailIndex{
     state: State,
@@ -176,7 +174,7 @@ impl DurableObject for EmailIndex {
 }
 
 // DemoRateLimit
-#[durable_object(fetch)]
+#[durable_object]
 pub struct DemoRateLimit {
     state: State,
     _env: Env,
