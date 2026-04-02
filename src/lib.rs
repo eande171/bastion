@@ -102,6 +102,13 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .patch_async("/v1/keys/hard-limit", |req, ctx| async move {
             handle_set_hard_limit(req, ctx).await?.with_cors(&build_cors())
         })
+
+        .options_async("/v1/health", |_, _| async move {
+            Response::empty()?.with_cors(&build_cors())
+        })
+        .get_async("/v1/health", |_, _| async move {
+            Response::ok("ok")?.with_cors(&build_cors())
+        }) 
         .run(req, env)
         .await?;
 
@@ -226,8 +233,7 @@ async fn handle_demo_usage(req: Request, ctx: RouteContext<()>) -> Result<Respon
     let metadata = auth::check_demo(&ip, &ctx.env).await?;
 
     Response::from_json(&serde_json::json!({
-        "usage": metadata.usage,
-        "reset_at": metadata.reset_at
+        "usage": metadata.usage
     }))
 }
 

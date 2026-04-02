@@ -88,8 +88,7 @@ pub struct EmailPut {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct DemoMetadata {
-    pub usage: u64,
-    pub reset_at: u64
+    pub usage: u64
 }
 
 // Helper Functions
