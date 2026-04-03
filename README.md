@@ -1,3 +1,5 @@
+<img src="./bastion.svg" width="25%">
+
 # Bastion
 **B**reach **A**udit & **S**ecure **T**hreat **I**ntelligence for **O**pen **N**etworks
 
