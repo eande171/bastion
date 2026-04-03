@@ -145,7 +145,10 @@ async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
         .query_pairs()
         .any(|(key, value)| key == "hibp" && value == "false");
 
-    let result = run_password_audit(&body.password, skip_hibp).await?;
+    let result = match run_password_audit(&body.password, skip_hibp).await {
+        Ok(res) => res,
+        Err(e) => return Response::error(e.to_string(), 400),
+    };
     body.password.zeroize(); // Clear Password from Memory
 
     Response::from_json(&result)
