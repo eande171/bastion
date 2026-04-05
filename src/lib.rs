@@ -21,10 +21,11 @@ use worker::{Context, Cors, Env, Method, Request, Response, Result, RouteContext
 use serde::Deserialize;
 use zeroize::Zeroize;
 
-use crate::evaluation::EvaluationResult;
+use crate::{error::{AppError, BastionError}, evaluation::EvaluationResult};
 
 mod auth;
 mod durable_objects;
+mod error;
 mod evaluation;
 mod hibp;
 
@@ -53,54 +54,54 @@ pub struct SetHardLimitRequest {
 
 #[event(fetch)]
 pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    let response = Router::new()
+    let response = match Router::new()
         .options_async("/v1/evaluate", |_, _| async move {
             Response::empty()?.with_cors(&build_cors())
         })
         .post_async("/v1/evaluate", |req, ctx| async move {
-            handle_evaluate(req, ctx).await?.with_cors(&build_cors())
+            respond(handle_evaluate(req, ctx).await, &build_cors()).await
         })
 
         .options_async("/v1/demo", |_, _| async move {
             Response::empty()?.with_cors(&build_demo_cors())
         })
         .post_async("/v1/demo", |req, ctx| async move {
-            handle_demo(req, ctx).await?.with_cors(&build_demo_cors())
+            respond(handle_demo(req, ctx).await, &build_demo_cors()).await
         })
 
         .options_async("/v1/demo/usage", |_, _| async move {
             Response::empty()?.with_cors(&build_demo_cors())
         })
         .get_async("/v1/demo/usage", |req, ctx| async move {
-            handle_demo_usage(req, ctx).await?.with_cors(&build_demo_cors())
+            respond(handle_demo_usage(req, ctx).await, &build_demo_cors()).await
         })
 
         .options_async("/v1/keys/register", |_, _| async move {
             Response::empty()?.with_cors(&build_cors())
         })
         .post_async("/v1/keys/register", |req, ctx| async move {
-            handle_register(req, ctx).await?.with_cors(&build_cors())
+            respond(handle_register(req, ctx).await, &build_cors()).await
         })
 
         .options_async("/v1/keys/regenerate", |_, _| async move {
             Response::empty()?.with_cors(&build_cors())
         })
         .post_async("/v1/keys/regenerate", |req, ctx| async move {
-            handle_regenerate(req, ctx).await?.with_cors(&build_cors())
+            respond(handle_regenerate(req, ctx).await, &build_cors()).await
         })
 
         .options_async("/v1/keys/usage", |_, _| async move {
             Response::empty()?.with_cors(&build_cors())
         })
         .get_async("/v1/keys/usage", |req, ctx| async move {
-            handle_usage(req, ctx).await?.with_cors(&build_cors())
+            respond(handle_usage(req, ctx).await, &build_cors()).await
         })
 
         .options_async("/v1/keys/hard-limit", |_, _| async move {
             Response::empty()?.with_cors(&build_cors())
         })
         .patch_async("/v1/keys/hard-limit", |req, ctx| async move {
-            handle_set_hard_limit(req, ctx).await?.with_cors(&build_cors())
+            respond(handle_set_hard_limit(req, ctx).await, &build_cors()).await
         })
 
         .options_async("/v1/health", |_, _| async move {
@@ -110,7 +111,15 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             Response::ok("ok")?.with_cors(&build_cors())
         }) 
         .run(req, env)
-        .await?;
+        .await {
+            Ok(r) => r,
+            Err(_) => {
+                Response::from_json(&serde_json::json!({
+                    "error": "INTERNAL_SERVER_ERROR",
+                    "message": "An unexpected error occurred"
+                }))?.with_status(500)
+            }
+        };
 
 
     let headers = response.headers().clone();
@@ -123,7 +132,14 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     Ok(response.with_headers(headers))
 }
 
-async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn respond(result: Result<Response, AppError>, cors: &Cors) -> worker::Result<Response> {
+    match result {
+        Ok(r) => r.with_cors(cors),
+        Err(e) => e.into_response()?.with_cors(cors)
+    }
+}
+
+async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
     // Determine Origin
     let proxy_secret = ctx.env.secret("RAPIDAPI_PROXY_SECRET")?.to_string();
     let incoming_secret = req.headers().get("X-RapidAPI-Proxy-Secret")?;
@@ -136,70 +152,64 @@ async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Resp
         auth::process_request(&api_key, &ctx.env).await?;
     }
 
-    let mut body: EvaluationRequest = match req.json().await {
-        Ok(data) => data,
-        Err(_) => return Response::error("Invalid JSON Body", 400),
+    let Ok(mut body) = req.json::<EvaluationRequest>().await else {
+        return Err(BastionError::InvalidJsonBody.into());
     };
 
     let skip_hibp = req.url()?
         .query_pairs()
         .any(|(key, value)| key == "hibp" && value == "false");
 
-    let result = match run_password_audit(&body.password, skip_hibp).await {
-        Ok(res) => res,
-        Err(e) => return Response::error(e.to_string(), 400),
-    };
+    let result = run_password_audit(&body.password, skip_hibp).await?;
     body.password.zeroize(); // Clear Password from Memory
 
-    Response::from_json(&result)
+    Ok(Response::from_json(&result)?)
 }
 
-async fn handle_register(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let body: RegisterRequest = match req.json().await {
-        Ok(data) => data,
-        Err(_) => return Response::error("Invalid JSON Body", 400),
+async fn handle_register(mut req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
+    let Ok(body) = req.json::<RegisterRequest>().await else {
+        return Err(BastionError::InvalidJsonBody.into());
     };
 
     let (api_key, regen_token) = auth::register(&body.email, &ctx.env).await?;
 
-    Response::from_json(&serde_json::json!({
+    Ok(Response::from_json(&serde_json::json!({
         "api_key": api_key,
         "regen_token": regen_token
-    }))
+    }))?)
 }
 
-async fn handle_regenerate(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
-    let body: RegenerateRequest = match req.json().await {
-        Ok(data) => data,
-        Err(_) => return Response::error("Invalid JSON Body", 400),
+async fn handle_regenerate(mut req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
+    let Ok(body) = req.json::<RegenerateRequest>().await else {
+        return Err(BastionError::InvalidJsonBody.into());
     };
 
     let (new_api_key, new_regen_token) = auth::regenerate(&body.email, &body.regen_token, &ctx.env).await?;
 
-    Response::from_json(&serde_json::json!({
+    Ok(Response::from_json(&serde_json::json!({
         "api_key": new_api_key,
         "regen_token": new_regen_token
-    }))
+    }))?)
 }
 
-async fn handle_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn handle_usage(req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
 
     let Ok(metadata) = auth::authenticate(&api_key, &ctx.env).await else {
-        return Response::error("Invalid API Key", 401);
+        return Err(BastionError::ApiKeyNotFound.into());
     };
 
-    Response::from_json(&serde_json::json!({
+    Ok(Response::from_json(&serde_json::json!({
         "tier": metadata.tier,
         "usage": metadata.usage,
         "limit": metadata.limit,
         "hard_limit": metadata.hard_limit,
         "reset_at": metadata.reset_at
-    }))
+    }))?)
 }
 
-async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
     let ip = req
         .headers()
         .get("CF-Connecting-IP")?
@@ -207,12 +217,11 @@ async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response
 
     let demo_data = auth::check_demo(&ip, &ctx.env).await?;
     if demo_data.usage >= 10 {
-        return Response::error("Demo limit reached. Sign up for a free API key.", 429);
+        return Err(BastionError::DemoLimitExceeded.into());
     }
 
-    let mut body: EvaluationRequest = match req.json().await {
-        Ok(data) => data,
-        Err(_) => return Response::error("Invalid JSON Body", 400),
+    let Ok(mut body) = req.json::<EvaluationRequest>().await else {
+        return Err(BastionError::InvalidJsonBody.into());
     };
 
     let skip_hibp = req.url()?
@@ -224,10 +233,10 @@ async fn handle_demo(mut req: Request, ctx: RouteContext<()>) -> Result<Response
 
     auth::increment_demo(&ip, &ctx.env).await?;
 
-    Response::from_json(&result)
+    Ok(Response::from_json(&result)?)
 }
 
-async fn handle_demo_usage(req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn handle_demo_usage(req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
     let ip = req
         .headers()
         .get("CF-Connecting-IP")?
@@ -235,26 +244,25 @@ async fn handle_demo_usage(req: Request, ctx: RouteContext<()>) -> Result<Respon
 
     let metadata = auth::check_demo(&ip, &ctx.env).await?;
 
-    Response::from_json(&serde_json::json!({
+    Ok(Response::from_json(&serde_json::json!({
         "usage": metadata.usage
-    }))
+    }))?)
 }
 
-async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
+async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
     // Validate API Key
     let api_key = extract_api_key(&req)?;
     let Ok(mut data) = auth::authenticate(&api_key, &ctx.env).await else {
-        return Response::error("Invalid API Key", 401);
+        return Err(BastionError::InvalidApiKey.into());
     };
 
-    let body: SetHardLimitRequest = match req.json().await {
-        Ok(data) => data,
-        Err(_) => return Response::error("Invalid JSON Body", 400),
+    let Ok(body) = req.json::<SetHardLimitRequest>().await else {
+        return Err(BastionError::InvalidJsonBody.into());
     };
 
     if let Some(limit) = body.hard_limit {
         if limit < data.limit {
-            return Response::error("Hard limit cannot be less than current tier limit", 400);
+            return Err(BastionError::HardLimitTooLow.into());
         }
         data.hard_limit = Some(limit);
     }
@@ -264,20 +272,20 @@ async fn handle_set_hard_limit(mut req: Request, ctx: RouteContext<()>) -> Resul
 
     auth::put_metadata(&api_key, &ctx.env, &data).await?;    
 
-    Response::from_json(&serde_json::json!({
+    Ok(Response::from_json(&serde_json::json!({
         "hard_limit": data.hard_limit,
         "limit": data.limit,
         "tier": data.tier
-    }))
+    }))?)
 }
 
-async fn run_password_audit(password: &str, skip_hibp: bool) -> Result<EvaluationResult> {
+async fn run_password_audit(password: &str, skip_hibp: bool) -> Result<EvaluationResult, AppError> {
     if password.len() > 128 {
-        return Err(worker::Error::from("Password cannot exceed 128 characters"));
+        return Err(BastionError::PasswordTooLong.into());
     }
 
     if password.trim().is_empty() {
-        return Err(worker::Error::from("Password cannot be empty"));
+        return Err(BastionError::PasswordEmpty.into());
     }
 
     let mut result = evaluation::evaluate(password);
@@ -310,15 +318,15 @@ fn build_demo_cors() -> Cors {
         .with_allowed_headers(["Content-Type"])
 }
 
-fn extract_api_key(req: &Request) -> Result<String> {
+fn extract_api_key(req: &Request) -> Result<String, AppError> {
     let api_key = req.headers().get("Authorization")?
-        .ok_or(worker::Error::from("Missing Authorization Header"))?
+        .ok_or(BastionError::MissingAuthHeader)?
         .strip_prefix("Bearer ")
-        .ok_or(worker::Error::from("Invalid Authorization Header"))?
+        .ok_or(BastionError::InvalidAuthHeader)?
         .to_string();
 
     if !api_key.starts_with("bsn_live_") {
-        return Err(worker::Error::from("Invalid API Key Format"));
+        return Err(BastionError::InvalidApiKey.into());
     }
 
     Ok(api_key)

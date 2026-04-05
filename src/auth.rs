@@ -20,7 +20,9 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use web_sys::{self, Crypto};
-use worker::{Env, Response, Result, Stub, ok::Ok};
+use worker::{Env, Response, Stub};
+
+use crate::error::{AppError, BastionError};
 
 #[derive(Serialize, Deserialize)]
 pub enum Tier {
@@ -102,7 +104,7 @@ pub fn next_reset_timestamp(tier: &Tier) -> u64 {
     worker::Date::now().as_millis() + tier.reset_interval_ms()
 }
 
-fn get_crypto() -> Result<Crypto> {
+fn get_crypto() -> Result<Crypto, AppError> {
     let global = worker::js_sys::global();
     let crypto = worker::js_sys::Reflect::get(&global, &"crypto".into())
         .map_err(|_| worker::Error::from("Failed to get crypto"))?;
@@ -110,7 +112,7 @@ fn get_crypto() -> Result<Crypto> {
     Ok(crypto.into())
 }
 
-fn generate_token(prefix: &str) -> Result<String> {
+fn generate_token(prefix: &str) -> Result<String, AppError> {
     let crypto = get_crypto()?;
     
     let uuid1 = crypto.random_uuid();
@@ -121,75 +123,71 @@ fn generate_token(prefix: &str) -> Result<String> {
     Ok(format!("{prefix}_{token}"))
 }
 
+fn require_ok(response: Response) -> Result<Response, AppError> {
+    if response.status_code() == 200 {
+        Ok(response)
+    } else {
+        Err(AppError::Response(response))
+    }
+}
+
 // Stub Helpers
-fn get_key_stub(env: &Env, api_hash: &str) -> Result<Stub> {
-    env.durable_object("KEY_STATE")?.id_from_name(api_hash)?.get_stub()
+fn get_key_stub(env: &Env, api_hash: &str) -> Result<Stub, AppError> {
+    Ok(env.durable_object("KEY_STATE")?.id_from_name(api_hash)?.get_stub()?)
 }
 
-fn get_email_stub(env: &Env) -> Result<Stub> {
-    env.durable_object("EMAIL_INDEX")?.id_from_name("global")?.get_stub()
+fn get_email_stub(env: &Env) -> Result<Stub, AppError> {
+    Ok(env.durable_object("EMAIL_INDEX")?.id_from_name("global")?.get_stub()?)
 }
 
-fn get_demo_stub(env: &Env) -> Result<Stub> {
-    env.durable_object("DEMO_RATE_LIMIT")?.id_from_name("global")?.get_stub()
+fn get_demo_stub(env: &Env) -> Result<Stub, AppError> {
+    Ok(env.durable_object("DEMO_RATE_LIMIT")?.id_from_name("global")?.get_stub()?)
 }
 
 // Stub Interactions
-async fn stub_get(stub: Stub, path: &str) -> Result<Response> {
-    let mut response = stub
+async fn stub_get(stub: Stub, path: &str) -> Result<Response, AppError> {
+    let response = stub
         .fetch_with_str(&format!("http://do{path}"))
         .await?;
-
-    if response.status_code() != 200 {
-        return Response::error(response.text().await?, response.status_code());
-    }
 
     Ok(response)
 }
 
-async fn stub_post(stub: Stub, path: &str, body: String) -> Result<Response> {
+async fn stub_post(stub: Stub, path: &str, body: String) -> Result<Response, AppError> {
     let mut init = worker::RequestInit::new();
     init.with_method(worker::Method::Post).with_body(Some(body.into()));
 
     let request = worker::Request::new_with_init(&format!("http://do{path}"), &init)?;
 
-    let mut response = stub.fetch_with_request(request).await?;
-
-    if response.status_code() != 200 {
-        return Response::error(response.text().await?, response.status_code());
-    }
+    let response = stub.fetch_with_request(request).await?;
 
     Ok(response)
 }
 
-async fn stub_delete(stub: Stub, path: &str) -> Result<Response> {
+async fn stub_delete(stub: Stub, path: &str) -> Result<Response, AppError> {
     let mut init = worker::RequestInit::new();
     init.with_method(worker::Method::Delete);
 
     let request = worker::Request::new_with_init(&format!("http://do{path}"), &init)?;
 
-    let mut response = stub.fetch_with_request(request).await?;
-
-    if response.status_code() != 200 {
-        return Response::error(response.text().await?, response.status_code());
-    }
+    let response = stub.fetch_with_request(request).await?;
 
     Ok(response)
 }
 
 // API Functions
-pub async fn put_metadata(api_hash: &str, env: &Env, data: &KeyMetadata) -> Result<()> {
+pub async fn put_metadata(api_hash: &str, env: &Env, data: &KeyMetadata) -> Result<(), AppError> {
     let key_stub = get_key_stub(env, api_hash)?;
-    stub_post(key_stub, "/put", serde_json::to_string(&data)?).await?;
+    require_ok(stub_post(key_stub, "/put", serde_json::to_string(&data)?).await?)?;
     Ok(())
 }
 
-pub async fn register(email: &str, env: &Env) -> Result<(String, String)> {
+pub async fn register(email: &str, env: &Env) -> Result<(String, String), AppError> {
     let email = email.trim().to_lowercase();
 
     // Validate Email
     if !email.contains('@') || !email.contains('.') {
-        return Err(worker::Error::from("Invalid Email"))
+        return Err(BastionError::InvalidEmail.into())
     }
 
     let email_hash = hash_credential(&email);
@@ -197,7 +195,7 @@ pub async fn register(email: &str, env: &Env) -> Result<(String, String)> {
     // Check if Email Already Exists
     let email_check = stub_post(get_email_stub(env)?, "/get", email_hash.clone()).await?;
     if email_check.status_code() == 200 {
-        return Err(worker::Error::from("Email Already Exists"))
+        return Err(BastionError::EmailAlreadyExists.into())
     }
 
     // Generate Tokens
@@ -210,54 +208,54 @@ pub async fn register(email: &str, env: &Env) -> Result<(String, String)> {
 
     // Store Metadata
     let key_stub = get_key_stub(env, &api_hash)?;
-    stub_post(key_stub, "/put", serde_json::to_string(&metadata)?).await?;
+    require_ok(stub_post(key_stub, "/put", serde_json::to_string(&metadata)?).await?)?;
 
     // Store Email
-    stub_post(get_email_stub(env)?, "/put", serde_json::to_string(&EmailPut { email_hash, api_hash })? ).await?;
+    require_ok(stub_post(get_email_stub(env)?, "/put", serde_json::to_string(&EmailPut { email_hash, api_hash })? ).await?)?;
 
     Ok((api_key, regen_token))
 }
 
-pub async fn authenticate(api_key: &str, env: &Env) -> Result<KeyMetadata> {
+pub async fn authenticate(api_key: &str, env: &Env) -> Result<KeyMetadata, AppError> {
     let api_hash = hash_credential(api_key);
     let key_stub = get_key_stub(env, &api_hash)?;
 
-    let mut response = stub_get(key_stub, "/authenticate").await?;
+    let mut response = require_ok(stub_get(key_stub, "/authenticate").await?)?;
 
     Ok(response.json::<KeyMetadata>().await?)
 }
 
-pub async fn process_request(api_key: &str, env: &Env) -> Result<KeyMetadata> {
+pub async fn process_request(api_key: &str, env: &Env) -> Result<KeyMetadata, AppError> {
     let api_hash = hash_credential(api_key);
     let key_stub = get_key_stub(env, &api_hash)?;
 
-    let mut response = stub_get(key_stub, "/process").await?;
+    let mut response = require_ok(stub_get(key_stub, "/process").await?)?;
 
     Ok(response.json::<KeyMetadata>().await?)
 }
 
-pub async fn regenerate(email: &str, regen_token: &str, env: &Env) -> Result<(String, String)> {
+pub async fn regenerate(email: &str, regen_token: &str, env: &Env) -> Result<(String, String), AppError> {
     let email = email.trim().to_lowercase();
     let email_hash = hash_credential(&email);
 
     // Validate Email
-    let mut email_response = stub_post(get_email_stub(env)?, "/get", email_hash.clone()).await?;
+    let mut email_response = require_ok(stub_post(get_email_stub(env)?, "/get", email_hash.clone()).await?)?;
     let api_hash = email_response.text().await?;
 
     // Get Metadata
     let key_stub = get_key_stub(env, &api_hash)?;
-    let mut response = stub_get(key_stub, "/get").await?;
+    let mut response = require_ok(stub_get(key_stub, "/get").await?)?;
 
     let mut data = response.json::<KeyMetadata>().await?;
 
     // Validate Regen Token
     if data.regen_token != hash_credential(regen_token) {
-        return Err(worker::Error::from("Invalid Regeneration Token"))
+        return Err(BastionError::InvalidRegenToken.into());
     }
 
     // Invalidate Old Key
-    stub_delete(get_key_stub(env, &api_hash)?, "/delete").await?;
-    stub_post(get_email_stub(env)?, "/delete", email_hash.clone()).await?;
+    require_ok(stub_delete(get_key_stub(env, &api_hash)?, "/delete").await?)?;
+    require_ok(stub_post(get_email_stub(env)?, "/delete", email_hash.clone()).await?)?;
 
     // Generate New Key
     let new_api_key = generate_token("bsn_live")?;
@@ -269,29 +267,29 @@ pub async fn regenerate(email: &str, regen_token: &str, env: &Env) -> Result<(St
     data.regen_token = new_regen_hash.clone();
 
     let key_stub = get_key_stub(env, &new_api_hash)?;
-    stub_post(key_stub, "/put", serde_json::to_string(&data)?).await?;
+    require_ok(stub_post(key_stub, "/put", serde_json::to_string(&data)?).await?)?;
 
     // Store Email + Key
-    stub_post(get_email_stub(env)?, "/put", serde_json::to_string(&EmailPut { email_hash, api_hash: new_api_hash })? ).await?;
+    require_ok(stub_post(get_email_stub(env)?, "/put", serde_json::to_string(&EmailPut { email_hash, api_hash: new_api_hash })? ).await?)?;
 
     Ok((new_api_key, new_regen_token))
 }
 
 // Demo Functions
-pub async fn check_demo(ip: &str, env: &Env) -> Result<DemoMetadata> {
+pub async fn check_demo(ip: &str, env: &Env) -> Result<DemoMetadata, AppError> {
     let ip_hash = hash_credential(ip);
     let demo_stub = get_demo_stub(env)?;
 
-    let mut response = stub_post(demo_stub, "/check", ip_hash).await?;
+    let mut response = require_ok(stub_post(demo_stub, "/check", ip_hash).await?)?;
 
     Ok(response.json::<DemoMetadata>().await?)
 }
 
-pub async fn increment_demo(ip: &str, env: &Env) -> Result<()> {
+pub async fn increment_demo(ip: &str, env: &Env) -> Result<(), AppError> {
     let ip_hash = hash_credential(ip);
     let demo_stub = get_demo_stub(env)?;
 
-    stub_post(demo_stub, "/increment", ip_hash).await?;
+    require_ok(stub_post(demo_stub, "/increment", ip_hash).await?)?;
 
     Ok(())
 }
