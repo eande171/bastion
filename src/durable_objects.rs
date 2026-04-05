@@ -19,7 +19,7 @@
 
 use std::time::Duration;
 
-use crate::auth::{DemoMetadata, EmailPut, KeyMetadata, Tier, next_reset_timestamp};
+use crate::{auth::{DemoMetadata, EmailPut, KeyMetadata, Tier, next_reset_timestamp}, error::{AppError, BastionError}};
 use worker::{DurableObject, Env, Request, Response, Result, State, durable_object, wasm_bindgen};
 
 // KeyState
@@ -36,10 +36,13 @@ impl DurableObject for KeyState {
 
     async fn fetch(&self, req: Request) -> Result<Response> {
         match req.path().as_str() {
-            "/get" => self.handle_get().await,
+            "/get" => self.handle_get().await
+                .or_else(|e| e.into_response()),
             "/put" => self.handle_put(req).await,
-            "/authenticate" => self.handle_authenticate().await,
-            "/process" => self.handle_process().await,
+            "/authenticate" => self.handle_authenticate().await
+                .or_else(|e| e.into_response()),
+            "/process" => self.handle_process().await
+                .or_else(|e| e.into_response()),
             "/delete" => self.handle_delete().await,
             _ => Response::error("Not Found", 404),
         }
@@ -48,12 +51,12 @@ impl DurableObject for KeyState {
 
 impl KeyState {
     // Helper Functions
-    async fn load(&self) -> Result<KeyMetadata> {
+    async fn load(&self) -> Result<KeyMetadata, AppError> {
         self.state
             .storage()
             .get::<KeyMetadata>("metadata")
             .await?
-            .ok_or(worker::Error::from("API Key Does Not Exist"))
+            .ok_or(AppError::Bastion(BastionError::ApiKeyNotFound))
     }
 
     async fn save(&self, data: &KeyMetadata) -> Result<()> {
@@ -64,9 +67,9 @@ impl KeyState {
     }
 
     // Fetch Handlers
-    async fn handle_get(&self) -> Result<Response> {
+    async fn handle_get(&self) -> Result<Response, AppError> {
         let data = self.load().await?;
-        Response::from_json(&data)
+        Ok(Response::from_json(&data)?)
     }
 
     async fn handle_put(&self, mut req: Request) -> Result<Response> {
@@ -75,9 +78,9 @@ impl KeyState {
         Response::ok("Metadata Updated")
     }
 
-    async fn handle_authenticate(&self) -> Result<Response> {
+    async fn handle_authenticate(&self) -> Result<Response, AppError> {
         let Ok(mut data) = self.load().await else {
-            return Response::error("API Key Does Not Exist", 404);
+            return Err(AppError::Bastion(BastionError::ApiKeyNotFound));
         };
 
         if worker::Date::now().as_millis() >= data.reset_at {
@@ -86,12 +89,12 @@ impl KeyState {
             self.save(&data).await?;
         }
 
-        Response::from_json(&data)
+        Ok(Response::from_json(&data)?)
     }
 
-    async fn handle_process(&self) -> Result<Response> {
+    async fn handle_process(&self) -> Result<Response, AppError> {
         let Ok(mut data) = self.load().await else {
-            return Response::error("API Key Does Not Exist", 404);
+            return Err(AppError::Bastion(BastionError::ApiKeyNotFound));
         };
     
         if worker::Date::now().as_millis() >= data.reset_at {
@@ -101,26 +104,26 @@ impl KeyState {
 
         if let Some(hard_limit) = data.hard_limit 
             && data.usage >= hard_limit {
-            return Response::error("API Key Usage Limit Exceeded", 429);
+            return Err(AppError::Bastion(BastionError::HardLimitExceeded));
         }
 
         match data.tier {
             Tier::Free => {
                 if data.usage >= data.limit {
-                    return Response::error("API Key Rate Limit Exceeded", 429);
+                    return Err(AppError::Bastion(BastionError::RateLimitExceeded));
                 }
             }
             Tier::Starter | Tier::Pro => {
                 // Handle Overage Logic Here
                 // todo!()
-                return Response::error("Paid tier billing not implemented yet", 501);
+                return Err(AppError::Bastion(BastionError::PaidTierNotImplemented));
             }
         }
     
         data.usage += 1;
         self.save(&data).await?;
     
-        Response::from_json(&data)
+        Ok(Response::from_json(&data)?)
     }
 
     async fn handle_delete(&self) -> Result<Response> {
