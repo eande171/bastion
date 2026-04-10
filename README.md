@@ -4,16 +4,16 @@
 **B**reach **A**udit & **S**ecure **T**hreat **I**ntelligence for **O**pen **N**etworks
 
 ## Purpose
-**Bastion** is a password audit API hosted on CloudFlare Workers, allowing you to submit a password and receive a strength score, estimated crack times, entropy, and breach status using the [zxcvbn-rs](https://github.com/shssoichiro/zxcvbn-rs) crate. This password is **never** stored, saved or logged anywhere. 
+**Bastion** is a password audit API hosted on Cloudflare Workers, allowing you to submit a password and receive a strength score, estimated crack times, entropy, and breach status using the [zxcvbn-rs](https://github.com/shssoichiro/zxcvbn-rs) crate. This password is **never** stored, saved or logged anywhere. 
 
 **Bastion** uses the [HaveIBeenPwned](https://haveibeenpwned.com/) database and their [k-anonymity API](https://haveibeenpwned.com/API/v3#SearchingPwnedPasswordsByRange) to check if your password has been included in any breaches. This involves using the first 5 characters of the SHA-1 hash being sent, not your password. 
 
 This additional information, as opposed to *"include a symbol"* or *"capitalise a letter"*, helps provide users with more information about their password's **true** security. 
 
 ## Access
-Currently, **Bastion** is available in 2 places, [RapidAPI](https://rapidapi.com/eande171-RQXKDUFxT/api/password-strength-and-breach-detection-api) and **directly**. 
+Currently, **Bastion** is available in 2 places, [RapidAPI](https://rapidapi.com/eande171-RQXKDUFxT/api/password-strength-and-breach-detection-api) and **natively**. 
 
-The direct version **only** has a free and demo tier. The framework for a potential paid tier exists but is yet to be properly implemented. These tiers would interact with additional endpoints that **do not apply to RapidAPI** *(see 'Documentation' below for more information)*, generally offering finer control at a *hopefully* cheaper price. 
+The native version **only** has a free tier (a demo is also available). This interacts with additional endpoints that **do not apply to RapidAPI** *(see 'Documentation' below for more information)*, generally offering finer control. It is intended for personal use or trying out the API. For production use, RapidAPI is recommended.
 
 ## Getting Started
 You can sign up for the [RapidAPI](https://rapidapi.com/eande171-RQXKDUFxT/api/password-strength-and-breach-detection-api) version *(recommended for anything more than trying it out)*. 
