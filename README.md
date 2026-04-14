@@ -11,14 +11,12 @@
 This additional information, as opposed to *"include a symbol"* or *"capitalise a letter"*, helps provide users with more information about their password's **true** security. 
 
 ## Access
-Currently, **Bastion** is available in 2 places, [RapidAPI](https://rapidapi.com/eande171-RQXKDUFxT/api/password-strength-and-breach-detection-api) and **natively**. 
+Currently, **Bastion** is only available natively. 
 
-The native version **only** has a free tier (a demo is also available). This interacts with additional endpoints that **do not apply to RapidAPI** *(see 'Documentation' below for more information)*, generally offering finer control. It is intended for personal use or trying out the API. For production use, RapidAPI is recommended.
+This version **only** has a free tier (a demo is also available). It is intended for personal use or trying out the API, not for production use.
 
 ## Getting Started
-You can sign up for the [RapidAPI](https://rapidapi.com/eande171-RQXKDUFxT/api/password-strength-and-breach-detection-api) version *(recommended for anything more than trying it out)*. 
-
-Alternatively, you can also use the [demo](https://eande171.github.io/bastion/demo/) and/or register for a [native key](https://eande171.github.io/bastion/demo/#register). Registering for a key **does** require an email address, though it is hashed immediately and is **only** used if you need to regenerate your key. 
+You can use the [demo](https://eande171.github.io/bastion/demo/) and/or register for a [native key](https://eande171.github.io/bastion/demo/#register). Registering for a key **does** require an email address, though it is hashed immediately and is **only** used if you need to regenerate your key. 
 
 ### Native Example
 Here is an example of how a request would be made:

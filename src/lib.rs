@@ -140,17 +140,8 @@ async fn respond(result: Result<Response, AppError>, cors: &Cors) -> worker::Res
 }
 
 async fn handle_evaluate(mut req: Request, ctx: RouteContext<()>) -> Result<Response, AppError> {
-    // Determine Origin
-    let proxy_secret = ctx.env.secret("RAPIDAPI_PROXY_SECRET")?.to_string();
-    let incoming_secret = req.headers().get("X-RapidAPI-Proxy-Secret")?;
-
-    let is_rapidapi = matches!(incoming_secret, Some(secret) if secret == proxy_secret);
-
-    if !is_rapidapi {
-        // Validate API Key
-        let api_key = extract_api_key(&req)?;
-        auth::process_request(&api_key, &ctx.env).await?;
-    }
+    let api_key = extract_api_key(&req)?;
+    auth::process_request(&api_key, &ctx.env).await?;
 
     let Ok(mut body) = req.json::<EvaluationRequest>().await else {
         return Err(BastionError::InvalidJsonBody.into());
